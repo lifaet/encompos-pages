@@ -1,15 +1,15 @@
-export async function onRequest(context) {
-  const ORIGIN = "https://encompos.ddns.net/";           // 👈 your real website
-  const { request } = context;
+export async function onRequest({ request }) {
+  const ORIGIN = "https://encompos.ddns.net/";           // 👈 replace with your real site
   const incomingUrl = new URL(request.url);
 
-  // Build target URL for the origin
+  // Build target URL on the origin
   const targetUrl = new URL(incomingUrl.pathname + incomingUrl.search, ORIGIN);
 
-  // Forward request to origin
+  // Clone headers for forwarding
   const headers = new Headers(request.headers);
   headers.set("Host", targetUrl.host);
 
+  // Forward request to origin (manual redirect handling)
   const originResponse = await fetch(targetUrl.toString(), {
     method: request.method,
     headers,
@@ -17,30 +17,33 @@ export async function onRequest(context) {
       request.method !== "GET" && request.method !== "HEAD"
         ? request.body
         : undefined,
-    redirect: "manual", // important: don't auto-follow redirects
+    redirect: "manual",
   });
 
   // Clone headers for editing
   const responseHeaders = new Headers(originResponse.headers);
 
-  // --- 🔁 Handle redirect responses (301/302/307/308) ---
-  if ([301, 302, 307, 308].includes(originResponse.status)) {
+  // --- Handle redirects ---
+  if ([301, 302, 303, 307, 308].includes(originResponse.status)) {
     let location = responseHeaders.get("Location") || "";
+
     if (location.startsWith(ORIGIN)) {
-      // rewrite origin to current host
       location = location.replace(ORIGIN, `https://${incomingUrl.host}`);
-    } else if (location.startsWith("/")) {
-      // relative redirect → keep same host
+    } else if (!/^https?:/i.test(location)) {
+      // relative path: ensure starting slash
+      if (!location.startsWith("/")) location = "/" + location;
       location = `https://${incomingUrl.host}${location}`;
     }
+
     responseHeaders.set("Location", location);
+
     return new Response(null, {
       status: originResponse.status,
       headers: responseHeaders,
     });
   }
 
-  // --- 🧁 Fix cookies ---
+  // --- Fix cookies ---
   if (responseHeaders.has("Set-Cookie")) {
     const cookies = responseHeaders
       .get("Set-Cookie")
@@ -50,7 +53,7 @@ export async function onRequest(context) {
     cookies.forEach((c) => responseHeaders.append("Set-Cookie", c));
   }
 
-  // --- 🧩 Rewrite HTML links ---
+  // --- Rewrite HTML links ---
   const contentType = responseHeaders.get("content-type") || "";
   if (contentType.includes("text/html")) {
     const rewriter = new HTMLRewriter()
@@ -67,14 +70,14 @@ export async function onRequest(context) {
     });
   }
 
-  // --- Other responses ---
+  // --- All other responses (CSS, JS, API JSON, images) ---
   return new Response(originResponse.body, {
     status: originResponse.status,
     headers: responseHeaders,
   });
 }
 
-// HTMLRewriter helper
+// --- Helper class for rewriting HTML attributes ---
 class AttrRewriter {
   constructor(attr, origin, newHost) {
     this.attr = attr;
@@ -84,11 +87,17 @@ class AttrRewriter {
   element(e) {
     const val = e.getAttribute(this.attr);
     if (!val) return;
+
+    // Rewrite absolute URLs pointing to origin
     if (val.startsWith(this.origin)) {
       e.setAttribute(
         this.attr,
         val.replace(this.origin, `https://${this.newHost}`)
       );
+    } 
+    // Rewrite relative URLs to ensure proper slash
+    else if (!/^https?:/i.test(val) && !val.startsWith("/")) {
+      e.setAttribute(this.attr, "/" + val);
     }
   }
 }
