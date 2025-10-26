@@ -1,68 +1,94 @@
-export async function onRequest({ request }) {
-  const ORIGIN = "https://encompos.ddns.net/";          // 👈 your real site
-  const PUBLIC_HOST = "encompos.pages.dev";   // 👈 your Pages domain
+export async function onRequest(context) {
+  const ORIGIN = "https://example.com";           // 👈 your real website
+  const { request } = context;
+  const incomingUrl = new URL(request.url);
 
-  const url = new URL(request.url);
-  const originUrl = new URL(url.pathname + url.search, ORIGIN);
+  // Build target URL for the origin
+  const targetUrl = new URL(incomingUrl.pathname + incomingUrl.search, ORIGIN);
 
-  const reqHeaders = new Headers(request.headers);
-  reqHeaders.set("Host", new URL(ORIGIN).host);
+  // Forward request to origin
+  const headers = new Headers(request.headers);
+  headers.set("Host", targetUrl.host);
 
-  const originResp = await fetch(originUrl.toString(), {
+  const originResponse = await fetch(targetUrl.toString(), {
     method: request.method,
-    headers: reqHeaders,
-    body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
-    redirect: "manual",
+    headers,
+    body:
+      request.method !== "GET" && request.method !== "HEAD"
+        ? request.body
+        : undefined,
+    redirect: "manual", // important: don't auto-follow redirects
   });
 
-  // Clone headers so we can modify them
-  const headers = new Headers(originResp.headers);
+  // Clone headers for editing
+  const responseHeaders = new Headers(originResponse.headers);
 
-  // --- Rewrite redirects ---
-  if (headers.has("Location")) {
-    const loc = headers.get("Location").replace(ORIGIN, `https://${PUBLIC_HOST}`);
-    headers.set("Location", loc);
-  }
-
-  // --- Rewrite cookies ---
-  if (headers.has("Set-Cookie")) {
-    const all = headers.get("Set-Cookie").split(/,(?=[^;]+=[^;]+)/);
-    headers.delete("Set-Cookie");
-    for (const cookie of all) {
-      headers.append("Set-Cookie", cookie.replace(/;\s*Domain=[^;]+/i, ""));
+  // --- 🔁 Handle redirect responses (301/302/307/308) ---
+  if ([301, 302, 307, 308].includes(originResponse.status)) {
+    let location = responseHeaders.get("Location") || "";
+    if (location.startsWith(ORIGIN)) {
+      // rewrite origin to current host
+      location = location.replace(ORIGIN, `https://${incomingUrl.host}`);
+    } else if (location.startsWith("/")) {
+      // relative redirect → keep same host
+      location = `https://${incomingUrl.host}${location}`;
     }
+    responseHeaders.set("Location", location);
+    return new Response(null, {
+      status: originResponse.status,
+      headers: responseHeaders,
+    });
   }
 
-  // --- HTML rewriting (optional but handy) ---
-  const contentType = headers.get("content-type") || "";
+  // --- 🧁 Fix cookies ---
+  if (responseHeaders.has("Set-Cookie")) {
+    const cookies = responseHeaders
+      .get("Set-Cookie")
+      .split(/,(?=[^;]+=[^;]+)/)
+      .map((c) => c.replace(/;\s*Domain=[^;]+/gi, ""));
+    responseHeaders.delete("Set-Cookie");
+    cookies.forEach((c) => responseHeaders.append("Set-Cookie", c));
+  }
+
+  // --- 🧩 Rewrite HTML links ---
+  const contentType = responseHeaders.get("content-type") || "";
   if (contentType.includes("text/html")) {
     const rewriter = new HTMLRewriter()
-      .on("a", new AttrRewriter("href", ORIGIN, PUBLIC_HOST))
-      .on("img", new AttrRewriter("src", ORIGIN, PUBLIC_HOST))
-      .on("link", new AttrRewriter("href", ORIGIN, PUBLIC_HOST))
-      .on("script", new AttrRewriter("src", ORIGIN, PUBLIC_HOST))
-      .on("form", new AttrRewriter("action", ORIGIN, PUBLIC_HOST));
-    return rewriter.transform(originResp);
+      .on("a", new AttrRewriter("href", ORIGIN, incomingUrl.host))
+      .on("img", new AttrRewriter("src", ORIGIN, incomingUrl.host))
+      .on("link", new AttrRewriter("href", ORIGIN, incomingUrl.host))
+      .on("script", new AttrRewriter("src", ORIGIN, incomingUrl.host))
+      .on("form", new AttrRewriter("action", ORIGIN, incomingUrl.host));
+
+    const rewritten = rewriter.transform(originResponse);
+    return new Response(rewritten.body, {
+      status: originResponse.status,
+      headers: responseHeaders,
+    });
   }
 
-  // Non-HTML responses
-  return new Response(originResp.body, {
-    status: originResp.status,
-    headers,
+  // --- Other responses ---
+  return new Response(originResponse.body, {
+    status: originResponse.status,
+    headers: responseHeaders,
   });
 }
 
+// HTMLRewriter helper
 class AttrRewriter {
-  constructor(attr, origin, publicHost) {
+  constructor(attr, origin, newHost) {
     this.attr = attr;
     this.origin = origin;
-    this.publicHost = publicHost;
+    this.newHost = newHost;
   }
   element(e) {
     const val = e.getAttribute(this.attr);
     if (!val) return;
     if (val.startsWith(this.origin)) {
-      e.setAttribute(this.attr, val.replace(this.origin, `https://${this.publicHost}`));
+      e.setAttribute(
+        this.attr,
+        val.replace(this.origin, `https://${this.newHost}`)
+      );
     }
   }
 }
