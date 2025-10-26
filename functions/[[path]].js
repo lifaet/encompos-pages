@@ -1,15 +1,21 @@
-export async function onRequest({ request }) {
-  const ORIGIN = "https://encompos.ddns.net/";           // 👈 replace with your real site
-  const incomingUrl = new URL(request.url);
+const ORIGIN = "https://encompos.ddns.net/"; // 👈 your real site
+const WORKER_HOST = "encompos.workers.dev"; // 👈 your worker domain
 
-  // Build target URL on the origin
-  const targetUrl = new URL(incomingUrl.pathname + incomingUrl.search, ORIGIN);
+addEventListener("fetch", (event) => {
+  event.respondWith(handleRequest(event.request));
+});
 
-  // Clone headers for forwarding
+async function handleRequest(request) {
+  const url = new URL(request.url);
+
+  // Build target URL on origin
+  const targetUrl = new URL(url.pathname + url.search, ORIGIN);
+
+  // Clone headers
   const headers = new Headers(request.headers);
   headers.set("Host", targetUrl.host);
 
-  // Forward request to origin (manual redirect handling)
+  // Forward request to origin
   const originResponse = await fetch(targetUrl.toString(), {
     method: request.method,
     headers,
@@ -20,84 +26,79 @@ export async function onRequest({ request }) {
     redirect: "manual",
   });
 
-  // Clone headers for editing
-  const responseHeaders = new Headers(originResponse.headers);
+  const respHeaders = new Headers(originResponse.headers);
 
   // --- Handle redirects ---
   if ([301, 302, 303, 307, 308].includes(originResponse.status)) {
-    let location = responseHeaders.get("Location") || "";
-
+    let location = respHeaders.get("Location") || "";
     if (location.startsWith(ORIGIN)) {
-      location = location.replace(ORIGIN, `https://${incomingUrl.host}`);
+      location = location.replace(ORIGIN, `https://${WORKER_HOST}`);
     } else if (!/^https?:/i.test(location)) {
-      // relative path: ensure starting slash
       if (!location.startsWith("/")) location = "/" + location;
-      location = `https://${incomingUrl.host}${location}`;
+      location = `https://${WORKER_HOST}${location}`;
     }
-
-    responseHeaders.set("Location", location);
-
+    respHeaders.set("Location", location);
     return new Response(null, {
       status: originResponse.status,
-      headers: responseHeaders,
+      headers: respHeaders,
     });
   }
 
   // --- Fix cookies ---
-  if (responseHeaders.has("Set-Cookie")) {
-    const cookies = responseHeaders
+  if (respHeaders.has("Set-Cookie")) {
+    const cookies = respHeaders
       .get("Set-Cookie")
       .split(/,(?=[^;]+=[^;]+)/)
       .map((c) => c.replace(/;\s*Domain=[^;]+/gi, ""));
-    responseHeaders.delete("Set-Cookie");
-    cookies.forEach((c) => responseHeaders.append("Set-Cookie", c));
+    respHeaders.delete("Set-Cookie");
+    cookies.forEach((c) => respHeaders.append("Set-Cookie", c));
   }
 
-  // --- Rewrite HTML links ---
-  const contentType = responseHeaders.get("content-type") || "";
+  const contentType = respHeaders.get("content-type") || "";
+
+  // --- Rewrite HTML content ---
   if (contentType.includes("text/html")) {
     const rewriter = new HTMLRewriter()
-      .on("a", new AttrRewriter("href", ORIGIN, incomingUrl.host))
-      .on("img", new AttrRewriter("src", ORIGIN, incomingUrl.host))
-      .on("link", new AttrRewriter("href", ORIGIN, incomingUrl.host))
-      .on("script", new AttrRewriter("src", ORIGIN, incomingUrl.host))
-      .on("form", new AttrRewriter("action", ORIGIN, incomingUrl.host));
+      .on("a", new AttrRewriter("href"))
+      .on("img", new AttrRewriter("src"))
+      .on("link", new AttrRewriter("href"))
+      .on("script", new AttrRewriter("src"))
+      .on("form", new AttrRewriter("action"))
+      .on("script", new JSRewriter());
 
-    const rewritten = rewriter.transform(originResponse);
-    return new Response(rewritten.body, {
-      status: originResponse.status,
-      headers: responseHeaders,
-    });
+    return rewriter.transform(originResponse);
   }
 
-  // --- All other responses (CSS, JS, API JSON, images) ---
+  // --- Return all other resources as-is ---
   return new Response(originResponse.body, {
     status: originResponse.status,
-    headers: responseHeaders,
+    headers: respHeaders,
   });
 }
 
-// --- Helper class for rewriting HTML attributes ---
+// --- HTML attribute rewriter ---
 class AttrRewriter {
-  constructor(attr, origin, newHost) {
+  constructor(attr) {
     this.attr = attr;
-    this.origin = origin;
-    this.newHost = newHost;
   }
-  element(e) {
-    const val = e.getAttribute(this.attr);
+  element(element) {
+    const val = element.getAttribute(this.attr);
     if (!val) return;
 
-    // Rewrite absolute URLs pointing to origin
-    if (val.startsWith(this.origin)) {
-      e.setAttribute(
-        this.attr,
-        val.replace(this.origin, `https://${this.newHost}`)
-      );
-    } 
-    // Rewrite relative URLs to ensure proper slash
-    else if (!/^https?:/i.test(val) && !val.startsWith("/")) {
-      e.setAttribute(this.attr, "/" + val);
+    if (val.startsWith(ORIGIN)) {
+      element.setAttribute(this.attr, val.replace(ORIGIN, `https://${WORKER_HOST}`));
+    } else if (!/^https?:/i.test(val) && !val.startsWith("/")) {
+      element.setAttribute(this.attr, "/" + val);
     }
+  }
+}
+
+// --- JS content rewriter for inline scripts ---
+class JSRewriter {
+  element(element) {
+    element.setInnerContent(
+      element.textContent.replaceAll(ORIGIN, `https://${WORKER_HOST}`),
+      { html: false }
+    );
   }
 }
