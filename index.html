@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Masked URL Example</title>
+<style>
+  body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  iframe { width: 100%; height: 100%; border: none; }
+</style>
+</head>
+<body>
+
+<iframe id="proxyFrame" src="http://encompos.ddns.net/"></iframe>
+
+<script>
+const iframe = document.getElementById('proxyFrame');
+
+// Push the current path to show pages.dev in browser URL
+function updateBrowserUrl(path = '/') {
+  const newUrl = window.location.origin + path;
+  history.replaceState({}, '', newUrl);
+}
+
+// Initial load
+updateBrowserUrl(window.location.pathname);
+
+// Optional: intercept browser back/forward buttons
+window.addEventListener('popstate', () => {
+  // Keep iframe on the same src (still example.com)
+  iframe.src = 'http://encompos.ddns.net/' + window.location.pathname;
+});
+
+// Optional: override links inside iframe to update browser URL
+iframe.addEventListener('load', () => {
+  try {
+    const doc = iframe.contentDocument || iframe.contentWindow.document;
+    doc.querySelectorAll('a').forEach(a => {
+      a.addEventListener('click', e => {
+        e.preventDefault();
+        const path = new URL(a.href).pathname;
+        iframe.src = 'http://encompos.ddns.net/' + path; // load original site
+        updateBrowserUrl(path); // show pages.dev URL
+      });
+    });
+  } catch(e) {
+    // Cannot access cross-origin iframe fully due to CORS
+  }
+});
+</script>
+
+</body>
+</html>
