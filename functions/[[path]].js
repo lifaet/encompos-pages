@@ -1,70 +1,48 @@
-const ORIGIN = "http://encompos.ddns.net"; // replace with your Ubuntu server URL
+const ORIGIN = "http://encompos.ddns.net"; // your real site
 
-export async function onRequest({ request }) {
-  const url = new URL(request.url);
+export async function onRequest(context) {
+  const url = new URL(context.request.url);
+
+  // Build the full origin URL
   const targetUrl = new URL(url.pathname + url.search, ORIGIN);
 
-  const headers = new Headers(request.headers);
-  headers.set("Host", targetUrl.host);
-
+  // Fetch the origin site
   const originResponse = await fetch(targetUrl.toString(), {
-    method: request.method,
-    headers,
-    body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
+    method: context.request.method,
+    headers: context.request.headers,
+    body: context.request.method !== "GET" && context.request.method !== "HEAD" 
+          ? context.request.body 
+          : undefined,
     redirect: "manual",
   });
 
+  // Clone headers
   const respHeaders = new Headers(originResponse.headers);
 
-  // Rewrite redirects
+  // Rewrite redirects to pages.dev domain
   if ([301, 302, 303, 307, 308].includes(originResponse.status)) {
     let location = respHeaders.get("Location") || "";
-    if (location.startsWith(ORIGIN)) location = location.replace(ORIGIN, url.origin);
-    else if (!/^https?:/i.test(location)) location = url.origin + location;
+    if (location.startsWith(ORIGIN)) {
+      location = location.replace(ORIGIN, url.origin);
+    } else if (!/^https?:/i.test(location)) {
+      location = url.origin + location;
+    }
     respHeaders.set("Location", location);
     return new Response(null, { status: originResponse.status, headers: respHeaders });
   }
 
-  // Fix cookies
+  // Optional: rewrite cookies so they work on pages.dev
   if (respHeaders.has("Set-Cookie")) {
-    const cookies = respHeaders.get("Set-Cookie").split(/,(?=[^;]+=[^;]+)/).map(c => c.replace(/;\s*Domain=[^;]+/gi, ""));
+    const cookies = respHeaders.get("Set-Cookie")
+      .split(/,(?=[^;]+=[^;]+)/)
+      .map(c => c.replace(/;\s*Domain=[^;]+/gi, ""));
     respHeaders.delete("Set-Cookie");
     cookies.forEach(c => respHeaders.append("Set-Cookie", c));
   }
 
-  const contentType = respHeaders.get("content-type") || "";
-
-  // Rewrite HTML/JS links
-  if (contentType.includes("text/html")) {
-    const rewriter = new HTMLRewriter()
-      .on("a", new AttrRewriter(url.origin))
-      .on("img", new AttrRewriter(url.origin))
-      .on("link", new AttrRewriter(url.origin))
-      .on("script", new AttrRewriter(url.origin))
-      .on("form", new AttrRewriter(url.origin))
-      .on("script", new JSRewriter(url.origin));
-
-    return rewriter.transform(originResponse);
-  }
-
-  return new Response(originResponse.body, { status: originResponse.status, headers: respHeaders });
-}
-
-class AttrRewriter {
-  constructor(newOrigin) { this.newOrigin = newOrigin; }
-  element(e) {
-    ["href", "src", "action"].forEach(attr => {
-      const val = e.getAttribute(attr);
-      if (!val) return;
-      if (val.startsWith(ORIGIN)) e.setAttribute(attr, val.replace(ORIGIN, this.newOrigin));
-      else if (!/^https?:/i.test(val) && !val.startsWith("/")) e.setAttribute(attr, "/" + val);
-    });
-  }
-}
-
-class JSRewriter {
-  constructor(newOrigin) { this.newOrigin = newOrigin; }
-  element(e) {
-    e.setInnerContent(e.textContent.replaceAll(ORIGIN, this.newOrigin), { html: false });
-  }
+  // Return response body with headers
+  return new Response(originResponse.body, {
+    status: originResponse.status,
+    headers: respHeaders
+  });
 }
