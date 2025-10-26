@@ -1,5 +1,5 @@
 export async function onRequest(context) {
-  const ORIGIN = "https://example.com";           // 👈 your real website
+  const ORIGIN = "https://encompos.ddns.net/";           // 👈 your real website
   const { request } = context;
   const incomingUrl = new URL(request.url);
 
